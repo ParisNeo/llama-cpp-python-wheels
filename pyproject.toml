@@ -1,0 +1,52 @@
+# pyproject.toml in the root of llama-cpp-python-wheels repo
+# This configures cibuildwheel when it runs
+
+[tool.cibuildwheel]
+# Skip builds we don't want/can't support easily on CI
+skip = ["*-musllinux_*", "pp*", "*i686"] # Skip musl, PyPy, 32-bit x86
+
+# Test requirements: what's needed to check if the wheel works
+test-requires = ["pytest"]
+# Command to run tests after building wheel
+# Note: This needs a model file, making testing tricky in CI.
+# Might need to download a tiny test model or skip tests initially.
+# test-command = "pytest {project}/tests" # Adjust path relative to {project} checkout
+test-skip = ["*"] # Skip tests initially due to complexity
+
+# Example: Configure Linux builds (manylinux)
+[tool.cibuildwheel.linux]
+archs = ["x86_64", "aarch64"] # Build for both architectures if runners are available
+# Use a dockcross image with necessary compilers/tools if needed,
+# especially for older manylinux standards or specific dependencies.
+# Default manylinux images might be sufficient.
+
+# Example: Configure MacOS builds
+[tool.cibuildwheel.macos]
+archs = ["x86_64", "arm64"] # Universal2 wheels are default if possible
+
+# Example: Configure Windows builds
+[tool.cibuildwheel.windows]
+archs = ["AMD64"] # x86_64
+
+# --- IMPORTANT PART: Environment Variables for CMAKE_ARGS ---
+# We'll set CMAKE_ARGS dynamically in the workflow based on the matrix,
+# and pass it to cibuildwheel via environment variables.
+
+# Example for Linux: CIBW_ENVIRONMENT_LINUX
+# In workflow: CIBW_ENVIRONMENT_LINUX: "CMAKE_ARGS='${{ env.CMAKE_ARGS }}' OTHER_VAR=..."
+
+# Example for MacOS: CIBW_ENVIRONMENT_MACOS
+# In workflow: CIBW_ENVIRONMENT_MACOS: "CMAKE_ARGS='${{ env.CMAKE_ARGS }}'"
+
+# Example for Windows: CIBW_ENVIRONMENT_WINDOWS
+# In workflow: CIBW_ENVIRONMENT_WINDOWS: "CMAKE_ARGS='${{ env.CMAKE_ARGS }}'"
+
+# Alternative: Pass environment variables directly to the pip install command
+# environment = { CMAKE_ARGS = "...", OTHER_VAR = "..." } # Less flexible with matrix
+
+[build-system]
+# This repo doesn't *build* itself, it builds llama-cpp-python.
+# So this section might not be strictly needed unless you have Python helper scripts
+# in this repo that need building/installing.
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
