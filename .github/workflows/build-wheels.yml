@@ -30,22 +30,21 @@ jobs:
           submodules: 'recursive'
           path: 'llama-cpp-python-src' # Checkout to a specific sub-path
 
-      - name: Get llama-cpp-python version
-        id: get_version
-        run: |
-          # Simple version extraction from pyproject.toml
-          VERSION=$(grep '^version = ' llama-cpp-python-src/pyproject.toml | awk -F'"' '{print $2}')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Determined version: $VERSION"
-
           - name: Generate Build Matrix
           id: generate_matrix
           run: |
-            # Ensure jq is installed on the runner
+            echo "Attempting to install jq..."
             sudo apt-get update && sudo apt-get install -y jq
+            APT_EXIT_CODE=$?
+            if [ $APT_EXIT_CODE -ne 0 ]; then
+              echo "::error::Failed to install jq. apt-get exit code: $APT_EXIT_CODE"
+              exit 1
+            fi
+            echo "jq installed successfully."
   
             # Define the matrix structure as a JSON string
-            read -r -d '' MATRIX_JSON << EOM
+            # Using a temporary file might be slightly more robust for complex JSON
+            cat << 'EOM' > matrix_def.json
             {
               "include": [
                 # === CPU ===
@@ -63,25 +62,44 @@ jobs:
             }
             EOM
   
-            # Validate and compact the JSON using jq. Quote the variable for safety.
-            # Pipe potential jq errors to stderr for visibility in logs.
-            COMPACT_JSON=$(echo "$MATRIX_JSON" | jq -c . 2> >(tee /dev/stderr) )
+            echo "--- Raw matrix definition (matrix_def.json) ---"
+            cat matrix_def.json
+            echo "-----------------------------------------------"
   
-            # Check if jq command failed (returned non-zero exit code)
-            if [ $? -ne 0 ]; then
-              echo "::error::jq failed to parse or process the JSON matrix. Please check JSON syntax and jq installation."
+            echo "Attempting to validate and compact JSON with jq..."
+            # Process the file, send errors directly to stderr
+            COMPACT_JSON=$(jq -c . < matrix_def.json)
+            JQ_EXIT_CODE=$? # Capture exit code immediately
+  
+            if [ $JQ_EXIT_CODE -ne 0 ]; then
+              echo "::error::jq failed to process the JSON matrix (Exit Code: $JQ_EXIT_CODE). Check JSON syntax above."
               exit 1
             fi
   
-            echo "Successfully compacted JSON." # Optional: Add for logging
+            # Add check for empty output from jq
+            if [ -z "$COMPACT_JSON" ]; then
+              echo "::error::jq succeeded but produced empty output. This should not happen with valid JSON."
+              exit 1
+            fi
   
-            # Set the output variable for GitHub Actions
+            echo "jq processed JSON successfully."
+            echo "--- Compacted JSON ---"
+            echo "$COMPACT_JSON"
+            echo "----------------------"
+  
+            echo "Setting GitHub Actions output variable 'matrix'..."
             # Ensure we write to the file specified by GITHUB_OUTPUT
             echo "matrix=$COMPACT_JSON" >> "$GITHUB_OUTPUT"
+            ECHO_EXIT_CODE=$?
   
-            echo "Matrix output variable set." # Optional: Add for logging
+            if [ $ECHO_EXIT_CODE -ne 0 ]; then
+              echo "::error::Failed to write matrix output variable to $GITHUB_OUTPUT (Exit Code: $ECHO_EXIT_CODE)."
+              exit 1
+            fi
   
-          shell: bash # Use default bash, no need for the explicit path and -e here as error is handled.
+            echo "Matrix output variable set successfully."
+  
+          shell: bash
 
   build_wheels:
     needs: prepare
