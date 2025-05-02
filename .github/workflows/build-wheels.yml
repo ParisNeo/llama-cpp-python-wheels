@@ -17,7 +17,7 @@ on:
         default: '3.10,3.11,3.12'
       cuda_version:
         description: 'CUDA version to build against if cuda backend selected (e.g., 11.8, 12.1, 12.4)'
-        required: false # Not required if cuda backend is not selected
+        required: false
         default: '12.1'
 
   schedule:
@@ -64,7 +64,7 @@ jobs:
 
           IFS=',' read -ra BACKENDS <<< "$REQUESTED_BACKENDS"
           IFS=',' read -ra PY_VERSIONS <<< "$REQUESTED_PY_VERSIONS"
-          CUDA_VERSION_NODOT="${REQUESTED_CUDA_VERSION//./}" # 12.1 -> 121
+          CUDA_VERSION_NODOT="${REQUESTED_CUDA_VERSION//./}"
           JSON_ENTRIES=""
 
           for py_ver in "${PY_VERSIONS[@]}"; do
@@ -91,8 +91,8 @@ jobs:
               fi
 
               if [[ "$backend" == "cuda" ]]; then
-                BACKEND_NAME="cu${CUDA_VERSION_NODOT}" # e.g., cu121
-                CMAKE_ARGS="-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native" # Add specific flags if needed per CUDA version
+                BACKEND_NAME="cu${CUDA_VERSION_NODOT}"
+                CMAKE_ARGS="-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native"
                 
                 BASE_CFG_LINUX="${BASE_CONFIGS['linux_x86_64']}"
                 JSON_OBJ_LINUX=$(jq -n --arg os "$(echo "$BASE_CFG_LINUX" | grep -o 'os=[^ ]*' | cut -d= -f2)" --arg python "$py_ver" --arg arch "$(echo "$BASE_CFG_LINUX" | grep -o 'arch=[^ ]*' | cut -d= -f2)" --arg backend "$BACKEND_NAME" --arg cmake_args "$CMAKE_ARGS" --arg runner "$(echo "$BASE_CFG_LINUX" | grep -o 'runner=[^ ]*' | cut -d= -f2)" --arg cibw_platform "$(echo "$BASE_CFG_LINUX" | grep -o 'cibw_platform=[^ ]*' | cut -d= -f2)" --arg cibw_build_spec "$cibw_build_spec" '{os: $os, python: $python, arch: $arch, backend: $backend, cmake_args: $cmake_args, runner: $runner, cibw_platform: $cibw_platform, cibw_build_spec: $cibw_build_spec}')
@@ -181,6 +181,7 @@ jobs:
       - name: Install Dependencies (Windows)
         if: runner.os == 'Windows'
         run: |
+          vcpkg install pkg-config:x64-windows --triplet x64-windows
           if [[ "${{ matrix.backend }}" == "cpu" ]]; then
             vcpkg install openblas:x64-windows --triplet x64-windows
           elif [[ "${{ matrix.backend }}" == "cu121" || "${{ matrix.backend }}" == "cu118" || "${{ matrix.backend }}" == "cu124" ]]; then
@@ -191,9 +192,11 @@ jobs:
 
       - name: Build wheels
         env:
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          # CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
           CIBW_BEFORE_BUILD_LINUX: >
             if [[ "${{ matrix.backend }}" == "cpu" ]]; then
-              yum install -y openblas-devel || apt-get update && apt-get install -y libopenblas-dev;
+              yum install -y openblas-devel;
             elif [[ "${{ matrix.backend }}" == "cu121" || "${{ matrix.backend }}" == "cu118" || "${{ matrix.backend }}" == "cu124" ]]; then
                echo "::warning::CUDA toolkit installation might be needed inside container for ${{ matrix.backend }}"
             fi &&
@@ -225,7 +228,7 @@ jobs:
           echo "------------------------------------"
           cd llama-cpp-python-src
           python -m cibuildwheel --output-dir ../wheelhouse
-        shell: bash # Force bash for this step on Windows
+        shell: bash
 
       - name: Store wheel artifact
         uses: actions/upload-artifact@v4
