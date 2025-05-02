@@ -1,25 +1,25 @@
 name: Build llama-cpp-python Wheels
 
 on:
-  workflow_dispatch: # Allow manual triggering
+  workflow_dispatch:
     inputs:
       llama_cpp_python_ref:
         description: 'llama-cpp-python git ref (tag, branch, commit)'
         required: true
-        default: 'main' # Or latest tag?
+        default: 'main'
       backends:
         description: 'Comma-separated list of backends (e.g., cpu,cuda,metal)'
         required: true
-        default: 'cpu,metal' # Sensible default for standard runners
+        default: 'cpu,metal'
   schedule:
-    - cron: '0 3 * * 0' # Run weekly (e.g., Sunday 3 AM UTC) to check latest tag
+    - cron: '0 3 * * 0'
 
 jobs:
   prepare:
     runs-on: ubuntu-latest
     outputs:
       llama_version: ${{ steps.get_version.outputs.version }}
-      llama_ref: ${{ github.event.inputs.llama_cpp_python_ref || 'main' }} # Default to main if not manually triggered with input
+      llama_ref: ${{ github.event.inputs.llama_cpp_python_ref || 'main' }}
       matrix: ${{ steps.generate_matrix.outputs.matrix }}
     steps:
       - name: Checkout llama-cpp-python (${{ github.event.inputs.llama_cpp_python_ref || 'main' }})
@@ -28,83 +28,80 @@ jobs:
           repository: abetlen/llama-cpp-python
           ref: ${{ github.event.inputs.llama_cpp_python_ref || 'main' }}
           submodules: 'recursive'
-          path: 'llama-cpp-python-src' # Checkout to a specific sub-path
+          path: 'llama-cpp-python-src'
+
+      - name: Get llama-cpp-python version
+        id: get_version
+        run: |
+          VERSION=$(grep '^version = ' llama-cpp-python-src/pyproject.toml | awk -F'"' '{print $2}')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Determined version: $VERSION"
 
       - name: Generate Build Matrix
         id: generate_matrix
         run: |
-            echo "Attempting to install jq..."
-            sudo apt-get update && sudo apt-get install -y jq
-            APT_EXIT_CODE=$?
-            if [ $APT_EXIT_CODE -ne 0 ]; then
-              echo "::error::Failed to install jq. apt-get exit code: $APT_EXIT_CODE"
-              exit 1
-            fi
-            echo "jq installed successfully."
-  
-            # Define the matrix structure as a JSON string
-            # Using a temporary file might be slightly more robust for complex JSON
-            cat << 'EOM' > matrix_def.json
-            {
-              "include": [
-                # === CPU ===
-                { "os": "ubuntu-latest", "python": "3.10", "arch": "x86_64", "backend": "cpu", "cmake_args": "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS", "runner": "ubuntu-latest", "cibw_platform": "linux" },
-                { "os": "windows-latest", "python": "3.10", "arch": "AMD64", "backend": "cpu", "cmake_args": "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS", "runner": "windows-latest", "cibw_platform": "windows" },
-                { "os": "macos-latest", "python": "3.10", "arch": "x86_64", "backend": "cpu", "cmake_args": "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS", "runner": "macos-latest", "cibw_platform": "macos" },
-                { "os": "macos-latest", "python": "3.10", "arch": "arm64", "backend": "cpu", "cmake_args": "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS -DCMAKE_OSX_ARCHITECTURES=arm64", "runner": "macos-latest", "cibw_platform": "macos"},
-                # === Metal (macOS arm64 only) ===
-                { "os": "macos-latest", "python": "3.10", "arch": "arm64", "backend": "metal", "cmake_args": "-DGGML_METAL=on -DCMAKE_OSX_ARCHITECTURES=arm64", "runner": "macos-latest", "cibw_platform": "macos"}
-                # === CUDA (Example - requires runners with CUDA toolkit or complex setup) ===
-                # { "os": "ubuntu-latest", "python": "3.10", "arch": "x86_64", "backend": "cu121", "cmake_args": "-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=native", "runner": "ubuntu-latest-gpu", "cibw_platform": "linux"} # Hypothetical GPU runner
-                # === Add more Python versions (3.9, 3.11, 3.12 etc.) ===
-                # === Add other backends (ROCm, Vulkan, SYCL, RPC) - likely requires specialized runners/setup ===
-              ]
-            }
-            EOM
-  
-            echo "--- Raw matrix definition (matrix_def.json) ---"
-            cat matrix_def.json
-            echo "-----------------------------------------------"
-  
-            echo "Attempting to validate and compact JSON with jq..."
-            # Process the file, send errors directly to stderr
-            COMPACT_JSON=$(jq -c . < matrix_def.json)
-            JQ_EXIT_CODE=$? # Capture exit code immediately
-  
-            if [ $JQ_EXIT_CODE -ne 0 ]; then
-              echo "::error::jq failed to process the JSON matrix (Exit Code: $JQ_EXIT_CODE). Check JSON syntax above."
-              exit 1
-            fi
-  
-            # Add check for empty output from jq
-            if [ -z "$COMPACT_JSON" ]; then
-              echo "::error::jq succeeded but produced empty output. This should not happen with valid JSON."
-              exit 1
-            fi
-  
-            echo "jq processed JSON successfully."
-            echo "--- Compacted JSON ---"
-            echo "$COMPACT_JSON"
-            echo "----------------------"
-  
-            echo "Setting GitHub Actions output variable 'matrix'..."
-            # Ensure we write to the file specified by GITHUB_OUTPUT
-            echo "matrix=$COMPACT_JSON" >> "$GITHUB_OUTPUT"
-            ECHO_EXIT_CODE=$?
-  
-            if [ $ECHO_EXIT_CODE -ne 0 ]; then
-              echo "::error::Failed to write matrix output variable to $GITHUB_OUTPUT (Exit Code: $ECHO_EXIT_CODE)."
-              exit 1
-            fi
-  
-            echo "Matrix output variable set successfully."
-  
+          echo "Attempting to install jq..."
+          sudo apt-get update && sudo apt-get install -y jq
+          APT_EXIT_CODE=$?
+          if [ $APT_EXIT_CODE -ne 0 ]; then
+            echo "::error::Failed to install jq. apt-get exit code: $APT_EXIT_CODE"
+            exit 1
+          fi
+          echo "jq installed successfully."
+
+          echo "Defining JSON matrix..."
+          cat << 'EOM' > matrix_def.json
+          {
+            "include": [
+              { "os": "ubuntu-latest", "python": "3.10", "arch": "x86_64", "backend": "cpu", "cmake_args": "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS", "runner": "ubuntu-latest", "cibw_platform": "linux" },
+              { "os": "windows-latest", "python": "3.10", "arch": "AMD64", "backend": "cpu", "cmake_args": "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS", "runner": "windows-latest", "cibw_platform": "windows" },
+              { "os": "macos-latest", "python": "3.10", "arch": "x86_64", "backend": "cpu", "cmake_args": "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS", "runner": "macos-latest", "cibw_platform": "macos" },
+              { "os": "macos-latest", "python": "3.10", "arch": "arm64", "backend": "cpu", "cmake_args": "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS -DCMAKE_OSX_ARCHITECTURES=arm64", "runner": "macos-latest", "cibw_platform": "macos"},
+              { "os": "macos-latest", "python": "3.10", "arch": "arm64", "backend": "metal", "cmake_args": "-DGGML_METAL=on -DCMAKE_OSX_ARCHITECTURES=arm64", "runner": "macos-latest", "cibw_platform": "macos"}
+            ]
+          }
+          EOM
+          echo "JSON definition written to matrix_def.json"
+
+          echo "--- Raw matrix definition (matrix_def.json) ---"
+          cat matrix_def.json
+          echo "-----------------------------------------------"
+
+          echo "Attempting to validate and compact JSON with jq..."
+          COMPACT_JSON=$(jq -c . < matrix_def.json)
+          JQ_EXIT_CODE=$?
+
+          if [ $JQ_EXIT_CODE -ne 0 ]; then
+            echo "::error::jq failed to process the JSON matrix (Exit Code: $JQ_EXIT_CODE). Check JSON syntax above."
+            exit 1
+          fi
+
+          if [ -z "$COMPACT_JSON" ]; then
+            echo "::error::jq succeeded but produced empty output. This should not happen with valid JSON."
+            exit 1
+          fi
+
+          echo "jq processed JSON successfully."
+          echo "--- Compacted JSON ---"
+          echo "$COMPACT_JSON"
+          echo "----------------------"
+
+          echo "Setting GitHub Actions output variable 'matrix'..."
+          echo "matrix=$COMPACT_JSON" >> "$GITHUB_OUTPUT"
+          ECHO_EXIT_CODE=$?
+
+          if [ $ECHO_EXIT_CODE -ne 0 ]; then
+            echo "::error::Failed to write matrix output variable to $GITHUB_OUTPUT (Exit Code: $ECHO_EXIT_CODE)."
+            exit 1
+          fi
+
+          echo "Matrix output variable set successfully."
         shell: bash
 
   build_wheels:
     needs: prepare
     name: Build (${{ matrix.os }}, Py${{ matrix.python }}, ${{ matrix.arch }}, ${{ matrix.backend }})
-    runs-on: ${{ matrix.runner }} # Use specific runner from matrix
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix: ${{fromJson(needs.prepare.outputs.matrix)}}
@@ -116,7 +113,7 @@ jobs:
           repository: abetlen/llama-cpp-python
           ref: ${{ needs.prepare.outputs.llama_ref }}
           submodules: 'recursive'
-          path: 'llama-cpp-python-src' # Checkout to the source directory
+          path: 'llama-cpp-python-src'
 
       - name: Set up Python ${{ matrix.python }}
         uses: actions/setup-python@v4
@@ -124,46 +121,31 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: Install cibuildwheel
-        run: python -m pip install cibuildwheel==2.17.0 # Use a specific version
+        run: python -m pip install cibuildwheel==2.17.0
 
-      # --- Backend Specific Setup (Examples) ---
       - name: Install Linux Dependencies (CPU)
         if: runner.os == 'Linux' && matrix.backend == 'cpu'
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev build-essential cmake
 
       - name: Install MacOS Dependencies (CPU/Metal)
         if: runner.os == 'macOS'
-        run: brew install openblas cmake || true # Allow failure if already installed
+        run: brew install openblas cmake || true
 
       - name: Install Windows Dependencies (CPU)
         if: runner.os == 'Windows'
-        # Assuming VS Build Tools are available on GitHub runners
         run: echo "Windows dependencies setup (check runner image)"
 
-      # Add steps for CUDA/ROCm/Vulkan/SYCL setup here if needed - this is the complex part!
-      # Example: actions/setup-java for CUDA? No, need nvidia toolkit.
-      # Maybe use containers for Linux builds with specific toolkits.
-
-      # --- Build Wheels ---
       - name: Build wheels
         env:
-          # Pass CMAKE_ARGS to cibuildwheel environment based on platform
           CIBW_ENVIRONMENT_LINUX: "CMAKE_ARGS='${{ matrix.cmake_args }}'"
           CIBW_ENVIRONMENT_MACOS: "CMAKE_ARGS='${{ matrix.cmake_args }}'"
           CIBW_ENVIRONMENT_WINDOWS: "CMAKE_ARGS='${{ matrix.cmake_args }}'"
-          # Tell cibuildwheel which platforms/architectures to build for this job
           CIBW_PLATFORM: ${{ matrix.cibw_platform }}
           CIBW_ARCHS: ${{ matrix.arch }}
-          # If building Universal2 on macOS, CIBW_ARCHS might be "auto" or "x86_64 arm64"
-          # Point cibuildwheel to the source checkout
-          CIBW_PROJECT_REQUIRES_PYTHON: ">=3.8" # Get from llama-cpp-python's pyproject.toml
-          # CIBW_BUILD: # Control which python versions to build for, e.g., cp310-*
+          CIBW_PROJECT_REQUIRES_PYTHON: ">=3.8"
         run: |
-          cd llama-cpp-python-src # <<< Run cibuildwheel from the source directory
+          cd llama-cpp-python-src
           python -m cibuildwheel --output-dir ../wheelhouse
-        # Note: We run cibuildwheel from *within* the checked-out llama-cpp-python-src directory
-        # because it looks for pyproject.toml there to know how to build the package.
-        # The pyproject.toml in the *root* of this repo is only for configuring cibuildwheel itself (optional advanced use).
 
       - name: Store wheel artifact
         uses: actions/upload-artifact@v4
@@ -172,30 +154,27 @@ jobs:
           path: wheelhouse/*.whl
 
   release:
-    needs: [prepare, build_wheels] # Run after all builds finish
+    needs: [prepare, build_wheels]
     runs-on: ubuntu-latest
-    # Only run for tagged commits on the main repo, or manual trigger? Needs refinement.
-    # For now, let's assume it always runs after builds and creates/updates a release.
-    # if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags') # Example condition
     steps:
       - name: Download all wheel artifacts
         uses: actions/download-artifact@v4
         with:
-          path: artifacts # Download all artifacts to 'artifacts' directory
+          path: artifacts
 
       - name: List downloaded artifacts
         run: find artifacts -name '*.whl'
 
       - name: Create or Update Release
         id: create_release
-        uses: softprops/action-gh-release@v2 # Use v2 or latest stable
+        uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tag_name: llama-cpp-python-v${{ needs.prepare.outputs.llama_version }} # Tag based on llama version
-          name: Wheels for llama-cpp-python v${{ needs.prepare.outputs.llama_version }}
+          tag_name: llama-cpp-python-v${{ needs.prepare.outputs.version }}
+          name: Wheels for llama-cpp-python v${{ needs.prepare.outputs.version }}
           body: |
-            Automated build of wheels for llama-cpp-python version ${{ needs.prepare.outputs.llama_version }} (ref: ${{ needs.prepare.outputs.llama_ref }}).
+            Automated build of wheels for llama-cpp-python version ${{ needs.prepare.outputs.version }} (ref: ${{ needs.prepare.outputs.llama_ref }}).
 
             **Installation:**
 
@@ -203,10 +182,10 @@ jobs:
             `pip install /path/to/downloaded/wheel.whl`
 
             Or, use the extra index URL (if configured via GitHub Pages):
-            `pip install llama-cpp-python --extra-index-url https://your-username.github.io/llama-cpp-python-wheels/whl/<backend>/`
+            `pip install llama-cpp-python --extra-index-url https://parisneo.github.io/llama-cpp-python-wheels/whl/<backend>/`
 
             **Built Wheels:**
             (List will be populated by uploaded assets)
           draft: false
-          prerelease: false # Set to true if building from non-tags?
-          files: artifacts/**/*.whl # Upload all downloaded wheels from all artifacts
+          prerelease: false
+          files: artifacts/**/*.whl
