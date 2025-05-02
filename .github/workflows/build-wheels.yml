@@ -181,6 +181,7 @@ jobs:
       - name: Install Dependencies (Windows)
         if: runner.os == 'Windows'
         run: |
+          vcpkg install pkgconf:x64-windows --triplet x64-windows # Install pkgconf first
           if [[ "${{ matrix.backend }}" == "cpu" ]]; then
             vcpkg install openblas:x64-windows --triplet x64-windows
           elif [[ "${{ matrix.backend }}" == "cu121" || "${{ matrix.backend }}" == "cu118" || "${{ matrix.backend }}" == "cu124" ]]; then
@@ -191,18 +192,19 @@ jobs:
 
       - name: Build wheels
         env:
-          CIBW_MANYLINUX_X86_64_IMAGE: manylinux2014
-          # CIBW_MANYLINUX_AARCH64_IMAGE: manylinux2014 # Uncomment if building aarch64 linux
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_24 # Use _2_24
+          # CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_24 # Uncomment if building aarch64 linux
           CIBW_BEFORE_BUILD_LINUX: >
             if [[ "${{ matrix.backend }}" == "cpu" ]]; then
-              yum install -y openblas-devel;
+              yum install -y openblas-devel; # Use yum for manylinux_2_24 (RHEL 8 base)
             elif [[ "${{ matrix.backend }}" == "cu121" || "${{ matrix.backend }}" == "cu118" || "${{ matrix.backend }}" == "cu124" ]]; then
                echo "::warning::CUDA toolkit installation might be needed inside container for ${{ matrix.backend }}"
             fi &&
             pip install auditwheel
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: >
             if [[ "${{ matrix.backend }}" == "cpu" ]]; then
-              auditwheel repair -w {dest_dir} --lib-sdir /usr/lib64 {wheel} || auditwheel repair -w {dest_dir} --lib-sdir /usr/lib/x86_64-linux-gnu {wheel};
+              # Stick with /usr/lib64 as primary for RHEL based images
+              auditwheel repair -w {dest_dir} --lib-sdir /usr/lib64 {wheel};
             else
               auditwheel repair -w {dest_dir} {wheel};
             fi
