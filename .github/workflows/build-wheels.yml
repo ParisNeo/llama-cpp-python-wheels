@@ -94,13 +94,15 @@ jobs:
                 BACKEND_NAME="cu${CUDA_VERSION_NODOT}"
                 CMAKE_ARGS="-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native"
                 
+                # Only generate Linux entry for CUDA on standard runners
                 BASE_CFG_LINUX="${BASE_CONFIGS['linux_x86_64']}"
                 JSON_OBJ_LINUX=$(jq -n --arg os "$(echo "$BASE_CFG_LINUX" | grep -o 'os=[^ ]*' | cut -d= -f2)" --arg python "$py_ver" --arg arch "$(echo "$BASE_CFG_LINUX" | grep -o 'arch=[^ ]*' | cut -d= -f2)" --arg backend "$BACKEND_NAME" --arg cmake_args "$CMAKE_ARGS" --arg runner "$(echo "$BASE_CFG_LINUX" | grep -o 'runner=[^ ]*' | cut -d= -f2)" --arg cibw_platform "$(echo "$BASE_CFG_LINUX" | grep -o 'cibw_platform=[^ ]*' | cut -d= -f2)" --arg cibw_build_spec "$cibw_build_spec" '{os: $os, python: $python, arch: $arch, backend: $backend, cmake_args: $cmake_args, runner: $runner, cibw_platform: $cibw_platform, cibw_build_spec: $cibw_build_spec}')
                 JSON_ENTRIES+="$JSON_OBJ_LINUX,"
 
-                BASE_CFG_WINDOWS="${BASE_CONFIGS['windows_amd64']}"
-                JSON_OBJ_WINDOWS=$(jq -n --arg os "$(echo "$BASE_CFG_WINDOWS" | grep -o 'os=[^ ]*' | cut -d= -f2)" --arg python "$py_ver" --arg arch "$(echo "$BASE_CFG_WINDOWS" | grep -o 'arch=[^ ]*' | cut -d= -f2)" --arg backend "$BACKEND_NAME" --arg cmake_args "$CMAKE_ARGS" --arg runner "$(echo "$BASE_CFG_WINDOWS" | grep -o 'runner=[^ ]*' | cut -d= -f2)" --arg cibw_platform "$(echo "$BASE_CFG_WINDOWS" | grep -o 'cibw_platform=[^ ]*' | cut -d= -f2)" --arg cibw_build_spec "$cibw_build_spec" '{os: $os, python: $python, arch: $arch, backend: $backend, cmake_args: $cmake_args, runner: $runner, cibw_platform: $cibw_platform, cibw_build_spec: $cibw_build_spec}')
-                JSON_ENTRIES+="$JSON_OBJ_WINDOWS,"
+                # Skip Windows CUDA entry generation
+                # BASE_CFG_WINDOWS="${BASE_CONFIGS['windows_amd64']}"
+                # JSON_OBJ_WINDOWS=$(jq -n --arg os "$(echo "$BASE_CFG_WINDOWS" | grep -o 'os=[^ ]*' | cut -d= -f2)" --arg python "$py_ver" --arg arch "$(echo "$BASE_CFG_WINDOWS" | grep -o 'arch=[^ ]*' | cut -d= -f2)" --arg backend "$BACKEND_NAME" --arg cmake_args "$CMAKE_ARGS" --arg runner "$(echo "$BASE_CFG_WINDOWS" | grep -o 'runner=[^ ]*' | cut -d= -f2)" --arg cibw_platform "$(echo "$BASE_CFG_WINDOWS" | grep -o 'cibw_platform=[^ ]*' | cut -d= -f2)" --arg cibw_build_spec "$cibw_build_spec" '{os: $os, python: $python, arch: $arch, backend: $backend, cmake_args: $cmake_args, runner: $runner, cibw_platform: $cibw_platform, cibw_build_spec: $cibw_build_spec}')
+                # JSON_ENTRIES+="$JSON_OBJ_WINDOWS,"
               fi
 
               if [[ "$backend" == "metal" ]]; then
@@ -181,29 +183,27 @@ jobs:
       - name: Install Dependencies (Windows)
         if: runner.os == 'Windows'
         run: |
-          vcpkg install pkgconf:x64-windows --triplet x64-windows # Install pkgconf first
+          # pkgconf install removed as it didn't solve the issue and isn't strictly needed if toolchain works
           if [[ "${{ matrix.backend }}" == "cpu" ]]; then
             vcpkg install openblas:x64-windows --triplet x64-windows
           elif [[ "${{ matrix.backend }}" == "cu121" || "${{ matrix.backend }}" == "cu118" || "${{ matrix.backend }}" == "cu124" ]]; then
             echo "::warning::CUDA Windows dependencies needed (toolkit for ${{ matrix.backend }})"
-            # vcpkg install openblas:x64-windows --triplet x64-windows
           fi
         shell: bash
 
       - name: Build wheels
         env:
-          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_24 # Use _2_24
-          # CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_24 # Uncomment if building aarch64 linux
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_24
+          # CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_24
           CIBW_BEFORE_BUILD_LINUX: >
             if [[ "${{ matrix.backend }}" == "cpu" ]]; then
-              yum install -y openblas-devel; # Use yum for manylinux_2_24 (RHEL 8 base)
+              yum install -y openblas-devel;
             elif [[ "${{ matrix.backend }}" == "cu121" || "${{ matrix.backend }}" == "cu118" || "${{ matrix.backend }}" == "cu124" ]]; then
                echo "::warning::CUDA toolkit installation might be needed inside container for ${{ matrix.backend }}"
             fi &&
             pip install auditwheel
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: >
             if [[ "${{ matrix.backend }}" == "cpu" ]]; then
-              # Stick with /usr/lib64 as primary for RHEL based images
               auditwheel repair -w {dest_dir} --lib-sdir /usr/lib64 {wheel};
             else
               auditwheel repair -w {dest_dir} {wheel};
