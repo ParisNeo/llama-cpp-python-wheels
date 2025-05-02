@@ -38,33 +38,50 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Determined version: $VERSION"
 
-      - name: Generate Build Matrix
-        id: generate_matrix
-        run: |
-          # Define configurations (OS, Python Version, Arch, Backend, CMake Args, Runner)
-          # This could be more sophisticated, reading from a config file maybe
-          read -r -d '' MATRIX_JSON << EOM
-          {
-            "include": [
-              # === CPU ===
-              { "os": "ubuntu-latest", "python": "3.10", "arch": "x86_64", "backend": "cpu", "cmake_args": "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS", "runner": "ubuntu-latest", "cibw_platform": "linux" },
-              { "os": "windows-latest", "python": "3.10", "arch": "AMD64", "backend": "cpu", "cmake_args": "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS", "runner": "windows-latest", "cibw_platform": "windows" },
-              { "os": "macos-latest", "python": "3.10", "arch": "x86_64", "backend": "cpu", "cmake_args": "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS", "runner": "macos-latest", "cibw_platform": "macos" },
-              { "os": "macos-latest", "python": "3.10", "arch": "arm64", "backend": "cpu", "cmake_args": "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS -DCMAKE_OSX_ARCHITECTURES=arm64", "runner": "macos-latest", "cibw_platform": "macos"},
-              # === Metal (macOS arm64 only) ===
-              { "os": "macos-latest", "python": "3.10", "arch": "arm64", "backend": "metal", "cmake_args": "-DGGML_METAL=on -DCMAKE_OSX_ARCHITECTURES=arm64", "runner": "macos-latest", "cibw_platform": "macos"},
-              # === CUDA (Example - requires runners with CUDA toolkit or complex setup) ===
-              # { "os": "ubuntu-latest", "python": "3.10", "arch": "x86_64", "backend": "cu121", "cmake_args": "-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=native", "runner": "ubuntu-latest-gpu", "cibw_platform": "linux"} # Hypothetical GPU runner
-              # === Add more Python versions (3.9, 3.11, 3.12 etc.) ===
-              # === Add other backends (ROCm, Vulkan, SYCL, RPC) - likely requires specialized runners/setup ===
-            ]
-          }
-          EOM
-          # Filter matrix based on manual input if provided
-          # This filtering logic needs refinement
-          # For now, it uses a default set, ignoring the 'backends' input for simplicity
-          echo "matrix=$(echo $MATRIX_JSON | jq -c .)" >> $GITHUB_OUTPUT
-
+          - name: Generate Build Matrix
+          id: generate_matrix
+          run: |
+            # Ensure jq is installed on the runner
+            sudo apt-get update && sudo apt-get install -y jq
+  
+            # Define the matrix structure as a JSON string
+            read -r -d '' MATRIX_JSON << EOM
+            {
+              "include": [
+                # === CPU ===
+                { "os": "ubuntu-latest", "python": "3.10", "arch": "x86_64", "backend": "cpu", "cmake_args": "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS", "runner": "ubuntu-latest", "cibw_platform": "linux" },
+                { "os": "windows-latest", "python": "3.10", "arch": "AMD64", "backend": "cpu", "cmake_args": "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS", "runner": "windows-latest", "cibw_platform": "windows" },
+                { "os": "macos-latest", "python": "3.10", "arch": "x86_64", "backend": "cpu", "cmake_args": "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS", "runner": "macos-latest", "cibw_platform": "macos" },
+                { "os": "macos-latest", "python": "3.10", "arch": "arm64", "backend": "cpu", "cmake_args": "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS -DCMAKE_OSX_ARCHITECTURES=arm64", "runner": "macos-latest", "cibw_platform": "macos"},
+                # === Metal (macOS arm64 only) ===
+                { "os": "macos-latest", "python": "3.10", "arch": "arm64", "backend": "metal", "cmake_args": "-DGGML_METAL=on -DCMAKE_OSX_ARCHITECTURES=arm64", "runner": "macos-latest", "cibw_platform": "macos"}
+                # === CUDA (Example - requires runners with CUDA toolkit or complex setup) ===
+                # { "os": "ubuntu-latest", "python": "3.10", "arch": "x86_64", "backend": "cu121", "cmake_args": "-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=native", "runner": "ubuntu-latest-gpu", "cibw_platform": "linux"} # Hypothetical GPU runner
+                # === Add more Python versions (3.9, 3.11, 3.12 etc.) ===
+                # === Add other backends (ROCm, Vulkan, SYCL, RPC) - likely requires specialized runners/setup ===
+              ]
+            }
+            EOM
+  
+            # Validate and compact the JSON using jq. Quote the variable for safety.
+            # Pipe potential jq errors to stderr for visibility in logs.
+            COMPACT_JSON=$(echo "$MATRIX_JSON" | jq -c . 2> >(tee /dev/stderr) )
+  
+            # Check if jq command failed (returned non-zero exit code)
+            if [ $? -ne 0 ]; then
+              echo "::error::jq failed to parse or process the JSON matrix. Please check JSON syntax and jq installation."
+              exit 1
+            fi
+  
+            echo "Successfully compacted JSON." # Optional: Add for logging
+  
+            # Set the output variable for GitHub Actions
+            # Ensure we write to the file specified by GITHUB_OUTPUT
+            echo "matrix=$COMPACT_JSON" >> "$GITHUB_OUTPUT"
+  
+            echo "Matrix output variable set." # Optional: Add for logging
+  
+          shell: bash # Use default bash, no need for the explicit path and -e here as error is handled.
 
   build_wheels:
     needs: prepare
