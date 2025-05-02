@@ -181,7 +181,6 @@ jobs:
       - name: Install Dependencies (Windows)
         if: runner.os == 'Windows'
         run: |
-          vcpkg install pkg-config:x64-windows --triplet x64-windows
           if [[ "${{ matrix.backend }}" == "cpu" ]]; then
             vcpkg install openblas:x64-windows --triplet x64-windows
           elif [[ "${{ matrix.backend }}" == "cu121" || "${{ matrix.backend }}" == "cu118" || "${{ matrix.backend }}" == "cu124" ]]; then
@@ -192,8 +191,8 @@ jobs:
 
       - name: Build wheels
         env:
-          CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
-          # CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux2014
+          # CIBW_MANYLINUX_AARCH64_IMAGE: manylinux2014 # Uncomment if building aarch64 linux
           CIBW_BEFORE_BUILD_LINUX: >
             if [[ "${{ matrix.backend }}" == "cpu" ]]; then
               yum install -y openblas-devel;
