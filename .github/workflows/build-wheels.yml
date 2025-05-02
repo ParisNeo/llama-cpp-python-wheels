@@ -8,9 +8,14 @@ on:
         required: true
         default: 'main'
       backends:
-        description: 'Comma-separated list of backends (e.g., cpu,cuda,metal)'
+        description: 'Comma-separated list of backends (e.g., cpu,cuda,metal,rocm)'
         required: true
-        default: 'cpu,metal'
+        default: 'cpu,cuda'
+      python_versions:
+        description: 'Comma-separated list of Python versions (e.g., 3.9,3.10,3.11,3.12)'
+        required: true
+        default: '3.10,3.11,3.12'
+
   schedule:
     - cron: '0 3 * * 0'
 
@@ -39,63 +44,82 @@ jobs:
 
       - name: Generate Build Matrix
         id: generate_matrix
+        env:
+          REQUESTED_BACKENDS: ${{ github.event.inputs.backends || 'cpu,cuda' }}
+          REQUESTED_PY_VERSIONS: ${{ github.event.inputs.python_versions || '3.10,3.11,3.12' }}
         run: |
-          echo "Attempting to install jq..."
           sudo apt-get update && sudo apt-get install -y jq
-          APT_EXIT_CODE=$?
-          if [ $APT_EXIT_CODE -ne 0 ]; then
-            echo "::error::Failed to install jq. apt-get exit code: $APT_EXIT_CODE"
-            exit 1
-          fi
-          echo "jq installed successfully."
+          if [ $? -ne 0 ]; then echo "::error::Failed to install jq."; exit 1; fi
 
-          echo "Defining JSON matrix..."
-          cat << 'EOM' > matrix_def.json
-          {
-            "include": [
-              { "os": "ubuntu-latest", "python": "3.10", "arch": "x86_64", "backend": "cpu", "cmake_args": "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS", "runner": "ubuntu-latest", "cibw_platform": "linux" },
-              { "os": "windows-latest", "python": "3.10", "arch": "AMD64", "backend": "cpu", "cmake_args": "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS", "runner": "windows-latest", "cibw_platform": "windows" },
-              { "os": "macos-latest", "python": "3.10", "arch": "x86_64", "backend": "cpu", "cmake_args": "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS", "runner": "macos-latest", "cibw_platform": "macos" },
-              { "os": "macos-latest", "python": "3.10", "arch": "arm64", "backend": "cpu", "cmake_args": "-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS -DCMAKE_OSX_ARCHITECTURES=arm64", "runner": "macos-latest", "cibw_platform": "macos"},
-              { "os": "macos-latest", "python": "3.10", "arch": "arm64", "backend": "metal", "cmake_args": "-DGGML_METAL=on -DCMAKE_OSX_ARCHITECTURES=arm64", "runner": "macos-latest", "cibw_platform": "macos"}
-            ]
-          }
-          EOM
-          echo "JSON definition written to matrix_def.json"
+          declare -A BASE_CONFIGS
+          BASE_CONFIGS["linux_x86_64"]="os=ubuntu-latest arch=x86_64 runner=ubuntu-latest cibw_platform=linux"
+          BASE_CONFIGS["windows_amd64"]="os=windows-latest arch=AMD64 runner=windows-latest cibw_platform=windows"
+          BASE_CONFIGS["macos_x86_64"]="os=macos-latest arch=x86_64 runner=macos-latest cibw_platform=macos"
+          BASE_CONFIGS["macos_arm64"]="os=macos-latest arch=arm64 runner=macos-latest cibw_platform=macos"
 
-          echo "--- Raw matrix definition (matrix_def.json) ---"
-          cat matrix_def.json
-          echo "-----------------------------------------------"
+          IFS=',' read -ra BACKENDS <<< "$REQUESTED_BACKENDS"
+          IFS=',' read -ra PY_VERSIONS <<< "$REQUESTED_PY_VERSIONS"
+          JSON_ENTRIES=""
 
-          echo "Attempting to validate and compact JSON with jq..."
-          COMPACT_JSON=$(jq -c . < matrix_def.json)
+          for py_ver in "${PY_VERSIONS[@]}"; do
+            py_ver=$(echo "$py_ver" | xargs)
+            cibw_build_spec="cp${py_ver//./}-*"
+            for backend in "${BACKENDS[@]}"; do
+              backend=$(echo "$backend" | xargs)
+
+              if [[ "$backend" == "cpu" ]]; then
+                CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS"
+                for key in "${!BASE_CONFIGS[@]}"; do
+                  BASE_CFG="${BASE_CONFIGS[$key]}"
+                  ENTRY_OS=$(echo "$BASE_CFG" | grep -o 'os=[^ ]*' | cut -d= -f2)
+                  ENTRY_ARCH=$(echo "$BASE_CFG" | grep -o 'arch=[^ ]*' | cut -d= -f2)
+                  ENTRY_RUNNER=$(echo "$BASE_CFG" | grep -o 'runner=[^ ]*' | cut -d= -f2)
+                  ENTRY_CIBW_PLATFORM=$(echo "$BASE_CFG" | grep -o 'cibw_platform=[^ ]*' | cut -d= -f2)
+                  ENTRY_CMAKE_ARGS="$CMAKE_ARGS"
+                  if [[ "$key" == "macos_arm64" ]]; then
+                     ENTRY_CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_OSX_ARCHITECTURES=arm64"
+                  fi
+                  JSON_OBJ=$(jq -n --arg os "$ENTRY_OS" --arg python "$py_ver" --arg arch "$ENTRY_ARCH" --arg backend "cpu" --arg cmake_args "$ENTRY_CMAKE_ARGS" --arg runner "$ENTRY_RUNNER" --arg cibw_platform "$ENTRY_CIBW_PLATFORM" --arg cibw_build_spec "$cibw_build_spec" '{os: $os, python: $python, arch: $arch, backend: $backend, cmake_args: $cmake_args, runner: $runner, cibw_platform: $cibw_platform, cibw_build_spec: $cibw_build_spec}')
+                  JSON_ENTRIES+="$JSON_OBJ,"
+                done
+              fi
+
+              if [[ "$backend" == "cuda" ]]; then
+                BACKEND_NAME="cu121"
+                CMAKE_ARGS="-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native"
+                
+                BASE_CFG_LINUX="${BASE_CONFIGS['linux_x86_64']}"
+                JSON_OBJ_LINUX=$(jq -n --arg os "$(echo "$BASE_CFG_LINUX" | grep -o 'os=[^ ]*' | cut -d= -f2)" --arg python "$py_ver" --arg arch "$(echo "$BASE_CFG_LINUX" | grep -o 'arch=[^ ]*' | cut -d= -f2)" --arg backend "$BACKEND_NAME" --arg cmake_args "$CMAKE_ARGS" --arg runner "$(echo "$BASE_CFG_LINUX" | grep -o 'runner=[^ ]*' | cut -d= -f2)" --arg cibw_platform "$(echo "$BASE_CFG_LINUX" | grep -o 'cibw_platform=[^ ]*' | cut -d= -f2)" --arg cibw_build_spec "$cibw_build_spec" '{os: $os, python: $python, arch: $arch, backend: $backend, cmake_args: $cmake_args, runner: $runner, cibw_platform: $cibw_platform, cibw_build_spec: $cibw_build_spec}')
+                JSON_ENTRIES+="$JSON_OBJ_LINUX,"
+
+                BASE_CFG_WINDOWS="${BASE_CONFIGS['windows_amd64']}"
+                JSON_OBJ_WINDOWS=$(jq -n --arg os "$(echo "$BASE_CFG_WINDOWS" | grep -o 'os=[^ ]*' | cut -d= -f2)" --arg python "$py_ver" --arg arch "$(echo "$BASE_CFG_WINDOWS" | grep -o 'arch=[^ ]*' | cut -d= -f2)" --arg backend "$BACKEND_NAME" --arg cmake_args "$CMAKE_ARGS" --arg runner "$(echo "$BASE_CFG_WINDOWS" | grep -o 'runner=[^ ]*' | cut -d= -f2)" --arg cibw_platform "$(echo "$BASE_CFG_WINDOWS" | grep -o 'cibw_platform=[^ ]*' | cut -d= -f2)" --arg cibw_build_spec "$cibw_build_spec" '{os: $os, python: $python, arch: $arch, backend: $backend, cmake_args: $cmake_args, runner: $runner, cibw_platform: $cibw_platform, cibw_build_spec: $cibw_build_spec}')
+                JSON_ENTRIES+="$JSON_OBJ_WINDOWS,"
+              fi
+
+              if [[ "$backend" == "metal" ]]; then
+                 BASE_CFG="${BASE_CONFIGS['macos_arm64']}"
+                 CMAKE_ARGS="-DGGML_METAL=on -DCMAKE_OSX_ARCHITECTURES=arm64"
+                 JSON_OBJ=$(jq -n --arg os "$(echo "$BASE_CFG" | grep -o 'os=[^ ]*' | cut -d= -f2)" --arg python "$py_ver" --arg arch "$(echo "$BASE_CFG" | grep -o 'arch=[^ ]*' | cut -d= -f2)" --arg backend "metal" --arg cmake_args "$CMAKE_ARGS" --arg runner "$(echo "$BASE_CFG" | grep -o 'runner=[^ ]*' | cut -d= -f2)" --arg cibw_platform "$(echo "$BASE_CFG" | grep -o 'cibw_platform=[^ ]*' | cut -d= -f2)" --arg cibw_build_spec "$cibw_build_spec" '{os: $os, python: $python, arch: $arch, backend: $backend, cmake_args: $cmake_args, runner: $runner, cibw_platform: $cibw_platform, cibw_build_spec: $cibw_build_spec}')
+                 JSON_ENTRIES+="$JSON_OBJ,"
+              fi
+              
+            done
+          done
+
+          JSON_ENTRIES=${JSON_ENTRIES%,}
+          FINAL_JSON="{\"include\": [$JSON_ENTRIES]}"
+
+          echo "$FINAL_JSON" | jq .
+
+          COMPACT_JSON=$(echo "$FINAL_JSON" | jq -c .)
           JQ_EXIT_CODE=$?
+          if [ $JQ_EXIT_CODE -ne 0 ]; then echo "::error::jq failed to process the FINAL JSON matrix (Exit Code: $JQ_EXIT_CODE)."; exit 1; fi
+          if [ -z "$COMPACT_JSON" ]; then echo "::error::jq produced empty output for FINAL JSON."; exit 1; fi
 
-          if [ $JQ_EXIT_CODE -ne 0 ]; then
-            echo "::error::jq failed to process the JSON matrix (Exit Code: $JQ_EXIT_CODE). Check JSON syntax above."
-            exit 1
-          fi
-
-          if [ -z "$COMPACT_JSON" ]; then
-            echo "::error::jq succeeded but produced empty output. This should not happen with valid JSON."
-            exit 1
-          fi
-
-          echo "jq processed JSON successfully."
-          echo "--- Compacted JSON ---"
-          echo "$COMPACT_JSON"
-          echo "----------------------"
-
-          echo "Setting GitHub Actions output variable 'matrix'..."
           echo "matrix=$COMPACT_JSON" >> "$GITHUB_OUTPUT"
-          ECHO_EXIT_CODE=$?
+          if [ $? -ne 0 ]; then echo "::error::Failed to write matrix output variable."; exit 1; fi
 
-          if [ $ECHO_EXIT_CODE -ne 0 ]; then
-            echo "::error::Failed to write matrix output variable to $GITHUB_OUTPUT (Exit Code: $ECHO_EXIT_CODE)."
-            exit 1
-          fi
-
-          echo "Matrix output variable set successfully."
         shell: bash
 
   build_wheels:
@@ -123,27 +147,61 @@ jobs:
       - name: Install cibuildwheel
         run: python -m pip install cibuildwheel==2.17.0
 
-      - name: Install Linux Dependencies (CPU)
-        if: runner.os == 'Linux' && matrix.backend == 'cpu'
-        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev build-essential cmake
-
-      - name: Install MacOS Dependencies (CPU/Metal)
-        if: runner.os == 'macOS'
-        run: brew install openblas cmake || true
-
-      - name: Install Windows Dependencies (CPU)
+      - name: Setup vcpkg (Windows only)
         if: runner.os == 'Windows'
-        run: echo "Windows dependencies setup (check runner image)"
+        uses: lukka/run-vcpkg@v11
+
+      - name: Install Dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake
+          if [[ "${{ matrix.backend }}" == "cpu" ]]; then
+            sudo apt-get install -y libopenblas-dev
+          elif [[ "${{ matrix.backend }}" == "cu121" ]]; then
+            echo "::warning::CUDA Linux dependencies needed (toolkit, drivers, etc.)"
+          fi
+
+      - name: Install Dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake || true
+          if [[ "${{ matrix.backend }}" == "cpu" || "${{ matrix.backend }}" == "metal" ]]; then
+             brew install openblas || true
+          fi
+
+      - name: Install Dependencies (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          if [[ "${{ matrix.backend }}" == "cpu" ]]; then
+            vcpkg install openblas:x64-windows --triplet x64-windows
+          elif [[ "${{ matrix.backend }}" == "cu121" ]]; then
+            echo "::warning::CUDA Windows dependencies needed (toolkit)"
+            # vcpkg install openblas:x64-windows --triplet x64-windows # May still need BLAS
+          fi
+        shell: bash
 
       - name: Build wheels
         env:
           CIBW_ENVIRONMENT_LINUX: "CMAKE_ARGS='${{ matrix.cmake_args }}'"
           CIBW_ENVIRONMENT_MACOS: "CMAKE_ARGS='${{ matrix.cmake_args }}'"
-          CIBW_ENVIRONMENT_WINDOWS: "CMAKE_ARGS='${{ matrix.cmake_args }}'"
+          CIBW_ENVIRONMENT_WINDOWS: "CMAKE_ARGS='${{ matrix.cmake_args }}' CMAKE_TOOLCHAIN_FILE='${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake'"
           CIBW_PLATFORM: ${{ matrix.cibw_platform }}
           CIBW_ARCHS: ${{ matrix.arch }}
+          CIBW_BUILD: ${{ matrix.cibw_build_spec }}
           CIBW_PROJECT_REQUIRES_PYTHON: ">=3.8"
         run: |
+          echo "--- Environment for cibuildwheel ---"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            echo "CMAKE_ARGS=${{ matrix.cmake_args }}"
+            echo "CMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
+          else
+            echo "CMAKE_ARGS=${{ matrix.cmake_args }}"
+          fi
+          echo "CIBW_PLATFORM=${{ matrix.cibw_platform }}"
+          echo "CIBW_ARCHS=${{ matrix.arch }}"
+          echo "CIBW_BUILD=${{ matrix.cibw_build_spec }}"
+          echo "------------------------------------"
           cd llama-cpp-python-src
           python -m cibuildwheel --output-dir ../wheelhouse
 
@@ -183,6 +241,7 @@ jobs:
 
             Or, use the extra index URL (if configured via GitHub Pages):
             `pip install llama-cpp-python --extra-index-url https://parisneo.github.io/llama-cpp-python-wheels/whl/<backend>/`
+            (Replace `<backend>` with `cpu`, `cu121`, `metal`, etc.)
 
             **Built Wheels:**
             (List will be populated by uploaded assets)
