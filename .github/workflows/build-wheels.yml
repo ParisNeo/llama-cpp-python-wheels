@@ -150,6 +150,8 @@ jobs:
       - name: Setup vcpkg (Windows only)
         if: runner.os == 'Windows'
         uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 'ce613c41372b23b1f51333815feb3edd87ef8a8b'
 
       - name: Install Dependencies (Linux)
         if: runner.os == 'Linux'
@@ -177,12 +179,23 @@ jobs:
             vcpkg install openblas:x64-windows --triplet x64-windows
           elif [[ "${{ matrix.backend }}" == "cu121" ]]; then
             echo "::warning::CUDA Windows dependencies needed (toolkit)"
-            # vcpkg install openblas:x64-windows --triplet x64-windows # May still need BLAS
+            # vcpkg install openblas:x64-windows --triplet x64-windows
           fi
         shell: bash
 
       - name: Build wheels
         env:
+          CIBW_BEFORE_BUILD_LINUX: >
+            if [[ "${{ matrix.backend }}" == "cpu" ]]; then
+              yum install -y openblas-devel || apt-get update && apt-get install -y libopenblas-dev;
+            fi &&
+            pip install auditwheel
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: >
+            if [[ "${{ matrix.backend }}" == "cpu" ]]; then
+              auditwheel repair -w {dest_dir} --lib-sdir /usr/lib64 {wheel} || auditwheel repair -w {dest_dir} --lib-sdir /usr/lib/x86_64-linux-gnu {wheel};
+            else
+              auditwheel repair -w {dest_dir} {wheel};
+            fi
           CIBW_ENVIRONMENT_LINUX: "CMAKE_ARGS='${{ matrix.cmake_args }}'"
           CIBW_ENVIRONMENT_MACOS: "CMAKE_ARGS='${{ matrix.cmake_args }}'"
           CIBW_ENVIRONMENT_WINDOWS: "CMAKE_ARGS='${{ matrix.cmake_args }}' CMAKE_TOOLCHAIN_FILE='${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake'"
