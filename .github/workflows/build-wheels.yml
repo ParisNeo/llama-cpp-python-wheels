@@ -11,6 +11,10 @@ on:
         description: 'Comma-separated list of backends (e.g., cpu,cuda,metal,rocm)'
         required: true
         default: 'cpu,cuda'
+      platforms:
+        description: 'Comma-separated list of platforms (e.g., linux_x86_64,windows_amd64,macos_x86_64,macos_arm64)'
+        required: true
+        default: 'linux_x86_64,windows_amd64,macos_x86_64,macos_arm64'
       python_versions:
         description: 'Comma-separated list of Python versions (e.g., 3.9,3.10,3.11,3.12)'
         required: true
@@ -50,6 +54,7 @@ jobs:
         id: generate_matrix
         env:
           REQUESTED_BACKENDS: ${{ github.event.inputs.backends || 'cpu,cuda' }}
+          REQUESTED_PLATFORMS: ${{ github.event.inputs.platforms || 'linux_x86_64,windows_amd64,macos_x86_64,macos_arm64' }}
           REQUESTED_PY_VERSIONS: ${{ github.event.inputs.python_versions || '3.10,3.11,3.12' }}
           REQUESTED_CUDA_VERSION: ${{ github.event.inputs.cuda_version || '12.1' }}
         run: |
@@ -63,6 +68,7 @@ jobs:
           BASE_CONFIGS["macos_arm64"]="os=macos-latest arch=arm64 runner=macos-latest cibw_platform=macos"
 
           IFS=',' read -ra BACKENDS <<< "$REQUESTED_BACKENDS"
+          IFS=',' read -ra PLATFORMS_INPUT <<< "$REQUESTED_PLATFORMS"
           IFS=',' read -ra PY_VERSIONS <<< "$REQUESTED_PY_VERSIONS"
           CUDA_VERSION_NODOT="${REQUESTED_CUDA_VERSION//./}"
           JSON_ENTRIES=""
@@ -74,57 +80,100 @@ jobs:
               backend=$(echo "$backend" | xargs)
 
               if [[ "$backend" == "cpu" ]]; then
-                CMAKE_ARGS="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS"
-                for key in "${!BASE_CONFIGS[@]}"; do
-                  BASE_CFG="${BASE_CONFIGS[$key]}"
-                  ENTRY_OS=$(echo "$BASE_CFG" | grep -o 'os=[^ ]*' | cut -d= -f2)
-                  ENTRY_ARCH=$(echo "$BASE_CFG" | grep -o 'arch=[^ ]*' | cut -d= -f2)
-                  ENTRY_RUNNER=$(echo "$BASE_CFG" | grep -o 'runner=[^ ]*' | cut -d= -f2)
-                  ENTRY_CIBW_PLATFORM=$(echo "$BASE_CFG" | grep -o 'cibw_platform=[^ ]*' | cut -d= -f2)
-                  ENTRY_CMAKE_ARGS="$CMAKE_ARGS"
-                  if [[ "$key" == "macos_arm64" ]]; then
-                     ENTRY_CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_OSX_ARCHITECTURES=arm64"
+                CMAKE_ARGS_BASE="-DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS"
+                for platform_key in "${PLATFORMS_INPUT[@]}"; do
+                  platform_key=$(echo "$platform_key" | xargs)
+                  if [[ -v BASE_CONFIGS[$platform_key] ]]; then
+                    BASE_CFG="${BASE_CONFIGS[$platform_key]}"
+                    ENTRY_OS=$(echo "$BASE_CFG" | grep -o 'os=[^ ]*' | cut -d= -f2)
+                    ENTRY_ARCH=$(echo "$BASE_CFG" | grep -o 'arch=[^ ]*' | cut -d= -f2)
+                    ENTRY_RUNNER=$(echo "$BASE_CFG" | grep -o 'runner=[^ ]*' | cut -d= -f2)
+                    ENTRY_CIBW_PLATFORM=$(echo "$BASE_CFG" | grep -o 'cibw_platform=[^ ]*' | cut -d= -f2)
+                    ENTRY_CMAKE_ARGS="$CMAKE_ARGS_BASE"
+                    if [[ "$platform_key" == "macos_arm64" ]]; then
+                       ENTRY_CMAKE_ARGS="$CMAKE_ARGS_BASE -DCMAKE_OSX_ARCHITECTURES=arm64"
+                    elif [[ "$platform_key" == "macos_x86_64" ]]; then
+                       ENTRY_CMAKE_ARGS="$CMAKE_ARGS_BASE -DCMAKE_OSX_ARCHITECTURES=x86_64"
+                    fi
+                    JSON_OBJ=$(jq -n --arg os "$ENTRY_OS" --arg python "$py_ver" --arg arch "$ENTRY_ARCH" --arg backend "cpu" --arg cmake_args "$ENTRY_CMAKE_ARGS" --arg runner "$ENTRY_RUNNER" --arg cibw_platform "$ENTRY_CIBW_PLATFORM" --arg cibw_build_spec "$cibw_build_spec" '{os: $os, python: $python, arch: $arch, backend: $backend, cmake_args: $cmake_args, runner: $runner, cibw_platform: $cibw_platform, cibw_build_spec: $cibw_build_spec}')
+                    JSON_ENTRIES+="$JSON_OBJ,"
+                  else
+                    echo "::warning::Requested platform '$platform_key' for CPU backend not found in BASE_CONFIGS. Skipping."
                   fi
-                  JSON_OBJ=$(jq -n --arg os "$ENTRY_OS" --arg python "$py_ver" --arg arch "$ENTRY_ARCH" --arg backend "cpu" --arg cmake_args "$ENTRY_CMAKE_ARGS" --arg runner "$ENTRY_RUNNER" --arg cibw_platform "$ENTRY_CIBW_PLATFORM" --arg cibw_build_spec "$cibw_build_spec" '{os: $os, python: $python, arch: $arch, backend: $backend, cmake_args: $cmake_args, runner: $runner, cibw_platform: $cibw_platform, cibw_build_spec: $cibw_build_spec}')
-                  JSON_ENTRIES+="$JSON_OBJ,"
                 done
               fi
 
               if [[ "$backend" == "cuda" ]]; then
                 BACKEND_NAME="cu${CUDA_VERSION_NODOT}"
                 CMAKE_ARGS="-DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=native"
-                
-                # Only generate Linux entry for CUDA on standard runners
-                BASE_CFG_LINUX="${BASE_CONFIGS['linux_x86_64']}"
-                JSON_OBJ_LINUX=$(jq -n --arg os "$(echo "$BASE_CFG_LINUX" | grep -o 'os=[^ ]*' | cut -d= -f2)" --arg python "$py_ver" --arg arch "$(echo "$BASE_CFG_LINUX" | grep -o 'arch=[^ ]*' | cut -d= -f2)" --arg backend "$BACKEND_NAME" --arg cmake_args "$CMAKE_ARGS" --arg runner "$(echo "$BASE_CFG_LINUX" | grep -o 'runner=[^ ]*' | cut -d= -f2)" --arg cibw_platform "$(echo "$BASE_CFG_LINUX" | grep -o 'cibw_platform=[^ ]*' | cut -d= -f2)" --arg cibw_build_spec "$cibw_build_spec" '{os: $os, python: $python, arch: $arch, backend: $backend, cmake_args: $cmake_args, runner: $runner, cibw_platform: $cibw_platform, cibw_build_spec: $cibw_build_spec}')
-                JSON_ENTRIES+="$JSON_OBJ_LINUX,"
 
-                # Skip Windows CUDA entry generation
-                # BASE_CFG_WINDOWS="${BASE_CONFIGS['windows_amd64']}"
-                # JSON_OBJ_WINDOWS=$(jq -n --arg os "$(echo "$BASE_CFG_WINDOWS" | grep -o 'os=[^ ]*' | cut -d= -f2)" --arg python "$py_ver" --arg arch "$(echo "$BASE_CFG_WINDOWS" | grep -o 'arch=[^ ]*' | cut -d= -f2)" --arg backend "$BACKEND_NAME" --arg cmake_args "$CMAKE_ARGS" --arg runner "$(echo "$BASE_CFG_WINDOWS" | grep -o 'runner=[^ ]*' | cut -d= -f2)" --arg cibw_platform "$(echo "$BASE_CFG_WINDOWS" | grep -o 'cibw_platform=[^ ]*' | cut -d= -f2)" --arg cibw_build_spec "$cibw_build_spec" '{os: $os, python: $python, arch: $arch, backend: $backend, cmake_args: $cmake_args, runner: $runner, cibw_platform: $cibw_platform, cibw_build_spec: $cibw_build_spec}')
-                # JSON_ENTRIES+="$JSON_OBJ_WINDOWS,"
+                # Only generate Linux entry for CUDA if linux_x86_64 is requested
+                is_linux_x86_64_requested=false
+                for p_key in "${PLATFORMS_INPUT[@]}"; do if [[ "$(echo "$p_key" | xargs)" == "linux_x86_64" ]]; then is_linux_x86_64_requested=true; break; fi; done
+                if $is_linux_x86_64_requested ; then
+                  if [[ -v BASE_CONFIGS['linux_x86_64'] ]]; then
+                    BASE_CFG_LINUX="${BASE_CONFIGS['linux_x86_64']}"
+                    JSON_OBJ_LINUX=$(jq -n --arg os "$(echo "$BASE_CFG_LINUX" | grep -o 'os=[^ ]*' | cut -d= -f2)" --arg python "$py_ver" --arg arch "$(echo "$BASE_CFG_LINUX" | grep -o 'arch=[^ ]*' | cut -d= -f2)" --arg backend "$BACKEND_NAME" --arg cmake_args "$CMAKE_ARGS" --arg runner "$(echo "$BASE_CFG_LINUX" | grep -o 'runner=[^ ]*' | cut -d= -f2)" --arg cibw_platform "$(echo "$BASE_CFG_LINUX" | grep -o 'cibw_platform=[^ ]*' | cut -d= -f2)" --arg cibw_build_spec "$cibw_build_spec" '{os: $os, python: $python, arch: $arch, backend: $backend, cmake_args: $cmake_args, runner: $runner, cibw_platform: $cibw_platform, cibw_build_spec: $cibw_build_spec}')
+                    JSON_ENTRIES+="$JSON_OBJ_LINUX,"
+                  else
+                    echo "::warning::Base config for 'linux_x86_64' (required for CUDA) not found. This should not happen."
+                  fi
+                else
+                  echo "::notice::CUDA backend selected, but 'linux_x86_64' not in requested platforms. Skipping Linux CUDA build."
+                fi
+                
+                # Skip Windows CUDA entry generation (remains commented as per original)
+                # is_windows_amd64_requested=false
+                # for p_key in "${PLATFORMS_INPUT[@]}"; do if [[ "$(echo "$p_key" | xargs)" == "windows_amd64" ]]; then is_windows_amd64_requested=true; break; fi; done
+                # if $is_windows_amd64_requested ; then
+                #   if [[ -v BASE_CONFIGS['windows_amd64'] ]]; then
+                #      BASE_CFG_WINDOWS="${BASE_CONFIGS['windows_amd64']}"
+                #      JSON_OBJ_WINDOWS=$(jq -n --arg os "$(echo "$BASE_CFG_WINDOWS" | grep -o 'os=[^ ]*' | cut -d= -f2)" --arg python "$py_ver" --arg arch "$(echo "$BASE_CFG_WINDOWS" | grep -o 'arch=[^ ]*' | cut -d= -f2)" --arg backend "$BACKEND_NAME" --arg cmake_args "$CMAKE_ARGS" --arg runner "$(echo "$BASE_CFG_WINDOWS" | grep -o 'runner=[^ ]*' | cut -d= -f2)" --arg cibw_platform "$(echo "$BASE_CFG_WINDOWS" | grep -o 'cibw_platform=[^ ]*' | cut -d= -f2)" --arg cibw_build_spec "$cibw_build_spec" '{os: $os, python: $python, arch: $arch, backend: $backend, cmake_args: $cmake_args, runner: $runner, cibw_platform: $cibw_platform, cibw_build_spec: $cibw_build_spec}')
+                #      JSON_ENTRIES+="$JSON_OBJ_WINDOWS,"
+                #   else
+                #     echo "::warning::Base config for 'windows_amd64' (potentially for CUDA) not found. This should not happen."
+                #   fi
+                # else
+                #   echo "::notice::CUDA backend selected, but 'windows_amd64' not in requested platforms. Skipping Windows CUDA build (if it were enabled)."
+                # fi
               fi
 
               if [[ "$backend" == "metal" ]]; then
-                 BASE_CFG="${BASE_CONFIGS['macos_arm64']}"
-                 CMAKE_ARGS="-DGGML_METAL=on -DCMAKE_OSX_ARCHITECTURES=arm64"
-                 JSON_OBJ=$(jq -n --arg os "$(echo "$BASE_CFG" | grep -o 'os=[^ ]*' | cut -d= -f2)" --arg python "$py_ver" --arg arch "$(echo "$BASE_CFG" | grep -o 'arch=[^ ]*' | cut -d= -f2)" --arg backend "metal" --arg cmake_args "$CMAKE_ARGS" --arg runner "$(echo "$BASE_CFG" | grep -o 'runner=[^ ]*' | cut -d= -f2)" --arg cibw_platform "$(echo "$BASE_CFG" | grep -o 'cibw_platform=[^ ]*' | cut -d= -f2)" --arg cibw_build_spec "$cibw_build_spec" '{os: $os, python: $python, arch: $arch, backend: $backend, cmake_args: $cmake_args, runner: $runner, cibw_platform: $cibw_platform, cibw_build_spec: $cibw_build_spec}')
-                 JSON_ENTRIES+="$JSON_OBJ,"
+                CMAKE_ARGS="-DGGML_METAL=on -DCMAKE_OSX_ARCHITECTURES=arm64"
+                is_macos_arm64_requested=false
+                for p_key in "${PLATFORMS_INPUT[@]}"; do if [[ "$(echo "$p_key" | xargs)" == "macos_arm64" ]]; then is_macos_arm64_requested=true; break; fi; done
+
+                if $is_macos_arm64_requested ; then
+                  if [[ -v BASE_CONFIGS['macos_arm64'] ]]; then
+                    BASE_CFG="${BASE_CONFIGS['macos_arm64']}"
+                    JSON_OBJ=$(jq -n --arg os "$(echo "$BASE_CFG" | grep -o 'os=[^ ]*' | cut -d= -f2)" --arg python "$py_ver" --arg arch "$(echo "$BASE_CFG" | grep -o 'arch=[^ ]*' | cut -d= -f2)" --arg backend "metal" --arg cmake_args "$CMAKE_ARGS" --arg runner "$(echo "$BASE_CFG" | grep -o 'runner=[^ ]*' | cut -d= -f2)" --arg cibw_platform "$(echo "$BASE_CFG" | grep -o 'cibw_platform=[^ ]*' | cut -d= -f2)" --arg cibw_build_spec "$cibw_build_spec" '{os: $os, python: $python, arch: $arch, backend: $backend, cmake_args: $cmake_args, runner: $runner, cibw_platform: $cibw_platform, cibw_build_spec: $cibw_build_spec}')
+                    JSON_ENTRIES+="$JSON_OBJ,"
+                  else
+                    echo "::warning::Base config for 'macos_arm64' (required for Metal) not found. This should not happen."
+                  fi
+                else
+                  echo "::notice::Metal backend selected, but 'macos_arm64' not in requested platforms. Skipping Metal build."
+                fi
               fi
-              
             done
           done
 
-          JSON_ENTRIES=${JSON_ENTRIES%,}
-          FINAL_JSON="{\"include\": [$JSON_ENTRIES]}"
+          if [[ -z "$JSON_ENTRIES" ]]; then
+            echo "::warning::No build configurations were generated. The matrix will be empty."
+            FINAL_JSON="{\"include\": []}"
+          else
+            JSON_ENTRIES=${JSON_ENTRIES%,} # Remove trailing comma
+            FINAL_JSON="{\"include\": [$JSON_ENTRIES]}"
+          fi
 
+          echo "Generated Matrix JSON:"
           echo "$FINAL_JSON" | jq .
 
           COMPACT_JSON=$(echo "$FINAL_JSON" | jq -c .)
           JQ_EXIT_CODE=$?
           if [ $JQ_EXIT_CODE -ne 0 ]; then echo "::error::jq failed to process the FINAL JSON matrix (Exit Code: $JQ_EXIT_CODE)."; exit 1; fi
-          if [ -z "$COMPACT_JSON" ]; then echo "::error::jq produced empty output for FINAL JSON."; exit 1; fi
-
+          # No need to check for empty COMPACT_JSON here as an empty matrix is valid {"include": []}
+          
           echo "matrix=$COMPACT_JSON" >> "$GITHUB_OUTPUT"
           if [ $? -ne 0 ]; then echo "::error::Failed to write matrix output variable."; exit 1; fi
 
@@ -132,6 +181,8 @@ jobs:
 
   build_wheels:
     needs: prepare
+    # Conditionally run this job only if the matrix is not empty
+    if: ${{ needs.prepare.outputs.matrix != '{"include":[]}' }}
     name: Build (${{ matrix.os }}, Py${{ matrix.python }}, ${{ matrix.arch }}, ${{ matrix.backend }})
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -239,15 +290,28 @@ jobs:
 
   release:
     needs: [prepare, build_wheels]
+    # Conditionally run this job only if the matrix was not empty (implying build_wheels ran or would have run)
+    if: ${{ always() && needs.prepare.outputs.matrix != '{"include":[]}' && (success() || failure()) && needs.build_wheels.result != 'skipped' }}
     runs-on: ubuntu-latest
     steps:
       - name: Download all wheel artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          # If build_wheels was skipped due to an empty matrix, download-artifact might fail if no artifacts produced
+          # However, the `if` condition on the job should prevent this.
+          # If some builds failed but others succeeded, we still want to release what was built.
+          # `if-no-files-found: warn` (or ignore) could be useful if partial success is expected and common.
+          # For now, rely on the job-level `if` and `always()` for the release job to run if there was something to build.
 
       - name: List downloaded artifacts
-        run: find artifacts -name '*.whl'
+        run: |
+          find artifacts -name '*.whl'
+          if [ ! -d "artifacts" ] || [ -z "$(ls -A artifacts/**/**/*.whl 2>/dev/null)" ]; then
+            echo "::warning::No wheel artifacts found to release. This might be expected if all builds failed or no builds were configured."
+            # Potentially exit here if no files means no release, or let softprops/action-gh-release handle it
+          fi
+
 
       - name: Create or Update Release
         id: create_release
@@ -260,14 +324,22 @@ jobs:
           body: |
             Automated build of wheels for llama-cpp-python version ${{ needs.prepare.outputs.version }} (ref: ${{ needs.prepare.outputs.llama_ref }}).
 
+            **Workflow Run:** https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            **Inputs:**
+            - Backends: `${{ github.event.inputs.backends || 'cpu,cuda (default)' }}`
+            - Platforms: `${{ github.event.inputs.platforms || 'linux_x86_64,windows_amd64,macos_x86_64,macos_arm64 (default)' }}`
+            - Python Versions: `${{ github.event.inputs.python_versions || '3.10,3.11,3.12 (default)' }}`
+            - CUDA Version: `${{ github.event.inputs.cuda_version || '12.1 (default)' }}`
+
             **Installation:**
 
             Find the appropriate wheel file for your OS, Python version, and backend below. Download it and install using pip:
             `pip install /path/to/downloaded/wheel.whl`
 
             Or, use the extra index URL (if configured via GitHub Pages):
-            `pip install llama-cpp-python --extra-index-url https://parisneo.github.io/llama-cpp-python-wheels/whl/<backend>/`
-            (Replace `<backend>` with `cpu`, `cu121`, `cu124`, `metal`, etc.)
+            `pip install llama-cpp-python --extra-index-url https://<your-gh-username>.github.io/llama-cpp-python-wheels/whl/<backend>/`
+            (Replace `<your-gh-username>` and `<backend>` with `cpu`, `cu121`, `cu124`, `metal`, etc.)
 
             **Built Wheels:**
             (List will be populated by uploaded assets)
